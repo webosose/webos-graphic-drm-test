@@ -153,7 +153,33 @@ static uint32_t find_crtc_for_connector(const drmModeRes *resources,
     return -1;
 }
 
-static int init_drm(char *device_path)
+static bool parse_resolution(char* resolution, int *w, int *h)
+{
+    char *p = resolution;
+    int v = 0;
+    bool found_x = false;
+
+    while(*p) {
+        if (isdigit(*p)) { // >= '0' && *p <= '9') {
+            v *= 10;
+            v += *p - '0';
+        } else if (*p == 'x') {
+            *w = v;
+            v = 0;
+            found_x = true;
+        } else {
+            return false;
+        }
+        p++;
+    }
+    if (!found_x)
+        return false;
+
+    *h = v;
+    return true;
+}
+
+static int init_drm(char *device_path, char *mode_str)
 {
     drmModeRes *resources;
     drmModeConnector *connector = NULL;
@@ -204,6 +230,27 @@ static int init_drm(char *device_path)
         if (current_area > area) {
             drm.mode = current_mode;
             area = current_area;
+        }
+    }
+
+    if (mode_str) {
+        int preferred_width;
+        int preferred_height;
+
+        if (!parse_resolution(mode_str, &preferred_width, &preferred_height)) {
+            printf("failed to parse mode_str: %s\n", mode_str);
+            return -1;
+        }
+
+        for (i = 0; i < connector->count_modes; i++) {
+            drmModeModeInfo *current_mode = &connector->modes[i];
+
+            if (preferred_width == current_mode->hdisplay &&
+                preferred_height == current_mode->vdisplay) {
+                printf("override matched mode for %dx%d\n", preferred_width, preferred_height);
+                drm.mode = current_mode;
+                break;
+            }
         }
     }
 
@@ -535,7 +582,7 @@ static bool parse_plane(char* resolution, int *id, int *w, int *h)
 static void print_usage(const char *progname)
 {
     printf("Usage:\n");
-    printf("    %s -p <plane_id>@<width>x<height> -o <plane_id>@<width>x<height> -v -d <duration> -D <device_path>\n", progname);
+    printf("    %s -p <plane_id>@<width>x<height> -o <plane_id>@<width>x<height> -v -d <duration> -D <device_path> -m <mode_str>\n", progname);
     printf("\n");
     printf("    -p primary plane info (default: %s)\n", default_primary_info);
     printf("    -o overlay plane info (default: %s)\n", default_overlay_info);
@@ -543,10 +590,11 @@ static void print_usage(const char *progname)
     printf("    -w fill black workaround (instead of turning off primary plane)\n");
     printf("    -d duration (default: %d)\n", default_duration);
     printf("    -D drm device path (default: /dev/dri/card0)\n");
+    printf("    -m mode preferred (default: NULL, mode with highest resolution)\n");
     printf("    -h help\n");
     printf("\n");
     printf("Example:\n");
-    printf("    %s -p 31@1920x1080 -o 38@512x1024 -v -d 100\n", progname);
+    printf("    %s -p 31@1920x1080 -o 38@512x1024 -v -d 100 -m 1920x1080\n", progname);
 }
 static bool lock_new_surface(struct gbm_surface *gbm_surface, struct gbm_bo **out_bo, struct drm_fb **out_fb)
 {
@@ -603,14 +651,18 @@ int main(int argc, char *argv[])
     char *primary_plane_info = default_primary_info;
     char *overlay_plane_info = default_overlay_info;
     char *device_path = "/dev/dri/card0";
+    char *mode_str = NULL;
 
     bool fill_black_workaround = false;
 
-    while ((opt = getopt(argc, argv, "whvd:p:o:D:")) != -1) {
+    while ((opt = getopt(argc, argv, "whvd:p:o:D:m:")) != -1) {
         switch (opt) {
             case 'h':
                 print_usage(argv[0]);
                 return 0;
+            case 'm':
+                mode_str = optarg;
+                break;
             case 'w':
                 fill_black_workaround = true;
                 break;
@@ -644,7 +696,7 @@ int main(int argc, char *argv[])
         }
     }
 
-    ret = init_drm(device_path);
+    ret = init_drm(device_path, mode_str);
     if (ret) {
         printf("failed to initialize DRM\n");
         return ret;
