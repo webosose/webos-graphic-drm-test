@@ -52,6 +52,8 @@
 #include <drm_fourcc.h>
 #include <ctype.h>
 
+#include <drm_fourcc.h>
+
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
 
 #define LOG(...)   do { if (verbose) printf(__VA_ARGS__); } while (0)
@@ -285,14 +287,13 @@ static int init_drm(char *device_path, char *mode_str)
     return 0;
 }
 
-static int init_gbm(int p_w, int p_h, int o_w, int o_h)
+static int init_gbm(int p_w, int p_h, int o_w, int o_h, uint32_t format)
 {
     printf("init_gbm: primary: %dx%d overlay: %dx%d\n", p_w, p_h, o_w, o_h);
 
     gbm.dev = gbm_create_device(drm.fd);
 
     uint64_t modifier = DRM_FORMAT_MOD_LINEAR;
-    uint32_t format = GBM_FORMAT_ARGB8888;
 
     gbm.surface1 = gbm_surface_create_with_modifiers(gbm.dev, p_w, p_h,
         format, &modifier, 1);
@@ -335,6 +336,11 @@ match_config_to_visual(EGLDisplay egl_display,
                 configs[i], EGL_NATIVE_VISUAL_ID,
                 &id))
             continue;
+
+        printf("configs[%d] = 0x%08x(%c%c%c%c), visual=0x%08x(%c%c%c%c)\n",
+            i,
+            id,  (id>>0)&0xff, (id>>8)&0xff, (id>>16)&0xff, (id>>24)&0xff,
+            visual_id, (visual_id>>0)&0xff, (visual_id>>8)&0xff, (visual_id>>16)&0xff, (visual_id>>24)&0xff);
 
         if (id == visual_id)
             return i;
@@ -386,7 +392,7 @@ out:
     return true;
 }
 
-static int init_gl(void)
+static int init_gl(uint32_t format)
 {
     EGLint major, minor, n;
     GLuint vertex_shader, fragment_shader;
@@ -431,7 +437,7 @@ static int init_gl(void)
         return -1;
     }
 
-    if (!egl_choose_config(gl.display, config_attribs, GBM_FORMAT_ARGB8888,
+    if (!egl_choose_config(gl.display, config_attribs, format,
             &gl.config)) {
         printf("failed to choose config\n");
         return -1;
@@ -508,7 +514,7 @@ drm_fb_destroy_callback(struct gbm_bo *bo, void *data)
 static struct drm_fb * drm_fb_get_from_bo(struct gbm_bo *bo)
 {
     struct drm_fb *fb = gbm_bo_get_user_data(bo);
-    uint32_t width, height, stride, handle;
+    uint32_t width, height, stride, handle, format;
     int ret;
 
     if (fb)
@@ -521,12 +527,13 @@ static struct drm_fb * drm_fb_get_from_bo(struct gbm_bo *bo)
     height = gbm_bo_get_height(bo);
     stride = gbm_bo_get_stride(bo);
     handle = gbm_bo_get_handle(bo).u32;
+    format = gbm_bo_get_format(bo);
 
     uint32_t handles[4] = { gbm_bo_get_handle(bo).u32 };
     uint32_t strides[4] = { gbm_bo_get_stride(bo) };
     uint32_t offsets[4] = { 0 };
 
-    ret = drmModeAddFB2(drm.fd, width, height, DRM_FORMAT_ARGB8888,
+    ret = drmModeAddFB2(drm.fd, width, height, format,
         handles, strides, offsets, &fb->fb_id, 0);
     LOG("drmModeAddFB2(%d, %d) fb_id: %d\n", width, height, fb->fb_id);
 
@@ -591,10 +598,11 @@ static void print_usage(const char *progname)
     printf("    -d duration (default: %d)\n", default_duration);
     printf("    -D drm device path (default: /dev/dri/card0)\n");
     printf("    -m mode preferred (default: NULL, mode with highest resolution)\n");
+    printf("    -f FOURCC format (default: AR24)\n");
     printf("    -h help\n");
     printf("\n");
     printf("Example:\n");
-    printf("    %s -p 31@1920x1080 -o 38@512x1024 -v -d 100 -m 1920x1080\n", progname);
+    printf("    %s -p 31@1920x1080 -o 38@512x1024 -v -d 100 -m 1920x1080 -f AR24\n", progname);
 }
 static bool lock_new_surface(struct gbm_surface *gbm_surface, struct gbm_bo **out_bo, struct drm_fb **out_fb)
 {
@@ -652,10 +660,11 @@ int main(int argc, char *argv[])
     char *overlay_plane_info = default_overlay_info;
     char *device_path = "/dev/dri/card0";
     char *mode_str = NULL;
+	uint32_t format = DRM_FORMAT_ARGB8888;
 
     bool fill_black_workaround = false;
 
-    while ((opt = getopt(argc, argv, "whvd:p:o:D:m:")) != -1) {
+    while ((opt = getopt(argc, argv, "whvd:p:o:D:m:f:")) != -1) {
         switch (opt) {
             case 'h':
                 print_usage(argv[0]);
@@ -681,6 +690,21 @@ int main(int argc, char *argv[])
             case 'D':
                 device_path = optarg;
                 break;
+            case 'f': {
+                char fourcc[4] = "    ";
+                int length = strlen(optarg);
+                if (length > 0)
+                    fourcc[0] = optarg[0];
+                if (length > 1)
+                    fourcc[1] = optarg[1];
+                if (length > 2)
+                    fourcc[2] = optarg[2];
+                if (length > 3)
+                    fourcc[3] = optarg[3];
+                format = fourcc_code(fourcc[0], fourcc[1],
+                    fourcc[2], fourcc[3]);
+                break;
+            }
             case '?':
                 if (optopt == 'p' || optopt == 'o')
                     fprintf(stderr, "Option -%c requires an argument.\n", optopt);
@@ -720,13 +744,13 @@ int main(int argc, char *argv[])
         return ret;
     }
 
-    ret = init_gbm(p_w, p_h, o_w, o_h);
+    ret = init_gbm(p_w, p_h, o_w, o_h, format);
     if (ret) {
         printf("failed to initialize GBM\n");
         return ret;
     }
 
-    ret = init_gl();
+    ret = init_gl(format);
     if (ret) {
         printf("failed to initialize EGL\n");
         return ret;
