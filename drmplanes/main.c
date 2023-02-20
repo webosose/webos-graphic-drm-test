@@ -53,12 +53,27 @@
 #include <ctype.h>
 
 #include <drm_fourcc.h>
+#include <stdarg.h>
 
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
 
-#define LOG(...)   do { if (verbose) printf(__VA_ARGS__); } while (0)
-
 static bool verbose = false;
+
+static void log_message_with_args(const char *msg, ...) {
+    if (!verbose)
+        return;
+
+    va_list args;
+    va_start(args, msg);
+    vprintf(msg, args);
+    va_end(args);
+}
+
+#define LOG(msg)                                                        \
+    log_message_with_args("%s:%d: " msg, __PRETTY_FUNCTION__, __LINE__)
+
+#define LOG_ARGS(msg, ...)                                              \
+    log_message_with_args("%s:%d: " msg, __PRETTY_FUNCTION__, __LINE__, __VA_ARGS__)
 
 static struct {
     EGLDisplay display;
@@ -492,7 +507,7 @@ static char* gbm_surface_name(struct gbm_surface *surface)
 
 static void draw_gl(int i, struct glcolor *color, EGLSurface gl_surface)
 {
-    LOG("%3d: fill color %s on %s\n", i, color_name(color), surface_name(gl_surface));
+    LOG_ARGS("%3d: fill color %s on %s\n", i, color_name(color), surface_name(gl_surface));
     glClearColor(color->r, color->g, color->b, color->a);
 	glClear(GL_COLOR_BUFFER_BIT);
 }
@@ -505,7 +520,7 @@ drm_fb_destroy_callback(struct gbm_bo *bo, void *data)
 
     if (fb->fb_id) {
         drmModeRmFB(drm.fd, fb->fb_id);
-        LOG("drmModeRmFB fb_id: %d\n", fb->fb_id);
+        LOG_ARGS("drmModeRmFB fb_id: %d\n", fb->fb_id);
     }
 
     free(fb);
@@ -535,7 +550,7 @@ static struct drm_fb * drm_fb_get_from_bo(struct gbm_bo *bo)
 
     ret = drmModeAddFB2(drm.fd, width, height, format,
         handles, strides, offsets, &fb->fb_id, 0);
-    LOG("drmModeAddFB2(%d, %d) fb_id: %d\n", width, height, fb->fb_id);
+    LOG_ARGS("drmModeAddFB2(%d, %d) fb_id: %d\n", width, height, fb->fb_id);
 
     if (ret) {
         printf("failed to create fb: %s\n", strerror(errno));
@@ -611,7 +626,7 @@ static bool lock_new_surface(struct gbm_surface *gbm_surface, struct gbm_bo **ou
         fprintf(stderr, "fail to lock front buffer(%s)\n", strerror(errno));
         return false;
     }
-    LOG("gbm_surface_lock_front_buffer: %s %p\n", gbm_surface_name(gbm_surface), bo);
+    LOG_ARGS("gbm_surface_lock_front_buffer: %s %p\n", gbm_surface_name(gbm_surface), bo);
 
     *out_bo = bo;
     struct drm_fb *fb = drm_fb_get_from_bo(bo);
@@ -635,7 +650,7 @@ static bool add_surface(EGLSurface gl_surface, struct gbm_surface *gbm_surface, 
 static void release_gbm_bo(struct gbm_surface* surface, struct gbm_bo *bo)
 {
     if (bo) {
-        LOG("gbm_surface_release_buffer: %s %p\n", gbm_surface_name(surface), bo);
+        LOG_ARGS("gbm_surface_release_buffer: %s %p\n", gbm_surface_name(surface), bo);
         gbm_surface_release_buffer(surface, bo);
     }
 }
@@ -726,7 +741,7 @@ int main(int argc, char *argv[])
         return ret;
     }
 
-    LOG("drm->mode: %dx%d\n", drm.mode->hdisplay, drm.mode->vdisplay);
+    LOG_ARGS("drm->mode: %dx%d\n", drm.mode->hdisplay, drm.mode->vdisplay);
 
     FD_ZERO(&fds);
     FD_SET(0, &fds);
@@ -782,7 +797,7 @@ int main(int argc, char *argv[])
         fprintf(stderr, "failed to set plane(primary) on: %s\n", strerror(errno));
         return ret;
     }
-    LOG("%3d: drmModeSetPlane primary on\n", i);
+    LOG_ARGS("%3d: drmModeSetPlane primary on\n", i);
 
     bool turn_overlay_on = false;
     bool turn_primary_on = false;
@@ -809,7 +824,7 @@ int main(int argc, char *argv[])
         turn_primary_on = prev_cond && !overlay_visible;
 
         if (turn_overlay_on) {
-            LOG("%3d: turn_overlay_on\n", i);
+            LOG_ARGS("%3d: turn_overlay_on\n", i);
             if (!fb2) {
                 if (!add_surface(gl.surface2, gbm.surface2, &blue, &bo2, &fb2)) {
                     fprintf(stderr, "fail to add surface 2\n");
@@ -835,7 +850,7 @@ int main(int argc, char *argv[])
                 draw_gl(i, &black, gl.surface1);
                 eglSwapBuffers(gl.display, gl.surface1);
             } else {
-                LOG("%3d: drmModeSetPlane primary off\n", i);
+                LOG_ARGS("%3d: drmModeSetPlane primary off\n", i);
                 ret = drmModeSetPlane(drm.fd, primary_plane_id, drm.crtc_id, 0,
                     0, 0, 0, 0, 0, 0, 0, 0, 0);
                 if (ret)
@@ -851,13 +866,13 @@ int main(int argc, char *argv[])
             if (ret)
                 fprintf(stderr, "failed to set plane(overlay) on: %s\n", strerror(errno));
             else
-                LOG("%3d: drmModeSetPlane overlay (move overlay to (%d, %d))\n", i, x_offset, 0);
+                LOG_ARGS("%3d: drmModeSetPlane overlay (move overlay to (%d, %d))\n", i, x_offset, 0);
         } else {
-            LOG("%3d: show primary\n", i);
+            LOG_ARGS("%3d: show primary\n", i);
         }
 
         if (turn_primary_on) {
-            LOG("%3d: turn_primary_on\n", i);
+            LOG_ARGS("%3d: turn_primary_on\n", i);
             eglMakeCurrent(gl.display, gl.surface1, gl.surface1, gl.context);
             draw_gl(i, &red, gl.surface1);
             eglSwapBuffers(gl.display, gl.surface1);
@@ -872,14 +887,14 @@ int main(int argc, char *argv[])
             if (ret)
                 fprintf(stderr, "failed to turn primary plane on(%s)\n", strerror(errno));
             else
-                LOG("%3d: drmModeSetPlane primary on\n", i);
+                LOG_ARGS("%3d: drmModeSetPlane primary on\n", i);
 
             ret = drmModeSetPlane(drm.fd, overlay_plane_id, drm.crtc_id, 0,
                 0, 0, 0, 0, 0, 0, 0, 0, 0);
             if (ret)
                 fprintf(stderr, "failed to turn overlay plane off(%s)\n", strerror(errno));
             else
-                LOG("%3d: drmModeSetPlane overlay off\n", i);
+                LOG_ARGS("%3d: drmModeSetPlane overlay off\n", i);
         }
 
         ret = drmModePageFlip(drm.fd, drm.crtc_id, fb->fb_id,
