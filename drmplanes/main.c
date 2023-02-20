@@ -55,7 +55,10 @@
 #include <drm_fourcc.h>
 #include <stdarg.h>
 
+#include "readpng.h"
+
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
+
 
 static bool verbose = false;
 
@@ -112,10 +115,13 @@ static struct glcolor red = {1.0f, 0.0f, 0.0f, 1.0f};
 static struct glcolor blue = {0.0f, 0.0f, 1.0f, 1.0f};
 static struct glcolor black = {0.0f, 0.0f, 0.0f, 1.0f};
 
-const int default_duration = 50;
-char *default_primary_info = "31@1920x1080";
-char *default_overlay_info = "38@512x1080";
+static const int default_duration = 50;
+static char *default_primary_info = "31@1920x1080";
+static char *default_overlay_info = "38@512x1080";
+static char *default_location = "/usr/share/drmplanes";
 
+static const char *primary_file_name = "primary_1920x1080.png";
+static const char *secondary_file_name = "secondary_512x2160.png";
 
 static char* color_name(struct glcolor *c)
 {
@@ -614,11 +620,13 @@ static void print_usage(const char *progname)
     printf("    -D drm device path (default: /dev/dri/card0)\n");
     printf("    -m mode preferred (default: NULL, mode with highest resolution)\n");
     printf("    -f FOURCC format (default: AR24)\n");
+    printf("    -l resource location (default: /usr/share/drmplanes)\n");
     printf("    -h help\n");
     printf("\n");
     printf("Example:\n");
     printf("    %s -p 31@1920x1080 -o 38@512x1024 -v -d 100 -m 1920x1080 -f AR24\n", progname);
 }
+
 static bool lock_new_surface(struct gbm_surface *gbm_surface, struct gbm_bo **out_bo, struct drm_fb **out_fb)
 {
     struct gbm_bo *bo = gbm_surface_lock_front_buffer(gbm_surface);
@@ -638,11 +646,94 @@ static bool lock_new_surface(struct gbm_surface *gbm_surface, struct gbm_bo **ou
     return true;
 }
 
+static bool read_png_from_file(const char* filename, png_buffer_handle *out_png_buffer_handle)
+{
+    FILE *fp = fopen(filename, "rb");
+    if (!fp) {
+        printf("failed to open %s\n", filename);
+        return false;
+    }
+    unsigned int sig_read = 0;
+    png_buffer_handle png_buffer_handle = NULL;
+    bool ret = read_png(fp, sig_read, &png_buffer_handle);
+    if (!ret) {
+        printf("failed to read_png %s\n", filename);
+        fclose(fp);
+        return false;
+    }
+    *out_png_buffer_handle = png_buffer_handle;
+    return true;
+}
+
+static bool fill_gbm_buffer(struct gbm_bo *bo, png_buffer_handle png_buffer_handle)
+{
+    uint32_t stride;
+    uint8_t *addr = NULL;
+    void *mmap_data = NULL;
+
+    uint32_t width = gbm_bo_get_width(bo);
+    uint32_t height = gbm_bo_get_height(bo);
+
+    addr = gbm_bo_map(bo, 0, 0, width, height, GBM_BO_TRANSFER_WRITE, &stride, &mmap_data);
+    if (!addr) {
+        printf("failed to map surface\n");
+        return false;
+    }
+
+    if (!fill_buffer(addr, width, height, stride, png_buffer_handle)) {
+        printf("failed to fill_buffer\n");
+        return false;
+    }
+
+    gbm_bo_unmap(bo, mmap_data);
+    return true;
+}
+
+static bool read_png_and_write_to_bo(const char* filename, struct gbm_bo *bo)
+{
+    uint32_t stride;
+    uint8_t *addr = NULL;
+    void *mmap_data = NULL;
+
+    uint32_t width = gbm_bo_get_width(bo);
+    uint32_t height = gbm_bo_get_height(bo);
+
+    addr = gbm_bo_map(bo, 0, 0, width, height, 0, &stride, &mmap_data);
+    if (!addr) {
+        printf("failed to map surface\n");
+        return false;
+    }
+
+    FILE *fp = fopen(filename, "rb");
+    if (!fp) {
+        printf("failed to open %s\n", filename);
+        return false;
+    }
+    unsigned int sig_read = 0;
+    png_buffer_handle png_buffer_handle = NULL;
+    bool ret = read_png(fp, sig_read, &png_buffer_handle);
+    if (!ret) {
+        printf("failed to read_png %s\n", filename);
+        fclose(fp);
+        return false;
+    }
+    if (!fill_buffer(addr, width, height, stride, png_buffer_handle)) {
+        printf("failed to fill_buffer\n");
+        fclose(fp);
+        return false;
+    }
+
+    gbm_bo_unmap(bo, mmap_data);
+    return true;
+}
+
 static bool add_surface(EGLSurface gl_surface, struct gbm_surface *gbm_surface, struct glcolor *color,
     struct gbm_bo **out_bo, struct drm_fb **out_fb)
 {
     eglMakeCurrent(gl.display, gl_surface, gl_surface, gl.context);
-    draw_gl(0, color, gl_surface);
+    /*
+     * draw_gl(0, color, gl_surface);
+     */
     eglSwapBuffers(gl.display, gl_surface);
     return lock_new_surface(gbm_surface, out_bo, out_fb);
 }
@@ -653,6 +744,14 @@ static void release_gbm_bo(struct gbm_surface* surface, struct gbm_bo *bo)
         LOG_ARGS("gbm_surface_release_buffer: %s %p\n", gbm_surface_name(surface), bo);
         gbm_surface_release_buffer(surface, bo);
     }
+}
+
+void get_resource_path(char* fullpath, const char *location, const char *filename)
+{
+    fullpath[0] = '\0';
+    strcat(fullpath, location);
+    strcat(fullpath, "/");
+    strcat(fullpath, filename);
 }
 
 int main(int argc, char *argv[])
@@ -675,15 +774,19 @@ int main(int argc, char *argv[])
     char *overlay_plane_info = default_overlay_info;
     char *device_path = "/dev/dri/card0";
     char *mode_str = NULL;
-	uint32_t format = DRM_FORMAT_ARGB8888;
+	uint32_t format = GBM_FORMAT_ARGB8888;
+    char *location = default_location;
 
     bool fill_black_workaround = false;
 
-    while ((opt = getopt(argc, argv, "whvd:p:o:D:m:f:")) != -1) {
+    while ((opt = getopt(argc, argv, "whvd:p:o:D:m:f:l:")) != -1) {
         switch (opt) {
             case 'h':
                 print_usage(argv[0]);
                 return 0;
+            case 'l':
+                location = optarg;
+                break;
             case 'm':
                 mode_str = optarg;
                 break;
@@ -779,6 +882,27 @@ int main(int argc, char *argv[])
         return 1;
     }
 
+    char filepath[1024];
+    memset(filepath, '\0', sizeof filepath);
+
+    png_buffer_handle png_handle_primary;
+    get_resource_path(filepath, location, primary_file_name);
+    if (!read_png_from_file(filepath, &png_handle_primary)) {
+        fprintf(stderr, "fail to read_png_from_file %s\n", primary_file_name);
+        return 1;
+    }
+    if (!fill_gbm_buffer(bo, png_handle_primary)) {
+        fprintf(stderr, "fail to fill primary bo\n");
+        return 1;
+    }
+
+    png_buffer_handle png_handle_secondary;
+    get_resource_path(filepath, location, secondary_file_name);
+    if (!read_png_from_file(filepath, &png_handle_secondary)) {
+        fprintf(stderr, "fail to read_png_from_file %s\n", secondary_file_name);
+        return 1;
+    }
+
     /* set mode: */
     ret = drmModeSetCrtc(drm.fd, drm.crtc_id, fb->fb_id, 0, 0,
             &drm.connector_id, 1, drm.mode);
@@ -830,13 +954,23 @@ int main(int argc, char *argv[])
                     fprintf(stderr, "fail to add surface 2\n");
                     return 1;
                 }
+                if (!fill_gbm_buffer(bo2, png_handle_secondary)) {
+                    fprintf(stderr, "fail to fill secondary bo\n");
+                    return 1;
+                }
             } else {
                 eglMakeCurrent(gl.display, gl.surface2, gl.surface2, gl.context);
-                draw_gl(i, &blue, gl.surface2);
+                /*
+                 * draw_gl(i, &blue, gl.surface2);
+                 */
                 eglSwapBuffers(gl.display, gl.surface2);
 
                 if (!lock_new_surface(gbm.surface2, &bo2_next, &fb2)) {
                     fprintf(stderr, "fail to lock surface 2\n");
+                    return 1;
+                }
+                if (!fill_gbm_buffer(bo2_next, png_handle_secondary)) {
+                    fprintf(stderr, "fail to fill secondary bo\n");
                     return 1;
                 }
             }
@@ -874,11 +1008,18 @@ int main(int argc, char *argv[])
         if (turn_primary_on) {
             LOG_ARGS("%3d: turn_primary_on\n", i);
             eglMakeCurrent(gl.display, gl.surface1, gl.surface1, gl.context);
-            draw_gl(i, &red, gl.surface1);
+            /*
+             * draw_gl(i, &red, gl.surface1);
+             */
             eglSwapBuffers(gl.display, gl.surface1);
 
             if (!lock_new_surface(gbm.surface1, &bo_next, &fb)) {
                 fprintf(stderr, "fail to lock surface 1\n");
+                return 1;
+            }
+
+            if (!fill_gbm_buffer(bo_next, png_handle_primary)) {
+                fprintf(stderr, "fail to fill primary bo\n");
                 return 1;
             }
 
@@ -929,6 +1070,9 @@ int main(int argc, char *argv[])
         bo2 = bo2_next;
         bo2_next = NULL;
     }
+
+    destroy_png_buffer(png_handle_primary);
+    destroy_png_buffer(png_handle_secondary);
 
     return 0;
 }
