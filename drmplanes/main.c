@@ -123,6 +123,9 @@ static char *default_location = "/usr/share/drmplanes";
 static const char *primary_file_name = "primary_1920x1080.png";
 static const char *secondary_file_name = "secondary_512x2160.png";
 
+static int default_crtc_width = 3840;
+static int default_crtc_height = 2160;
+
 static char* color_name(struct glcolor *c)
 {
     if (c == &red)
@@ -614,6 +617,8 @@ static void print_usage(const char *progname)
     printf("\n");
     printf("    -p primary plane info (default: %s)\n", default_primary_info);
     printf("    -o overlay plane info (default: %s)\n", default_overlay_info);
+    printf("    -c CRTC resolution to be used drmModeSetPlane for primary plane (default: %dx%d)\n",
+        default_crtc_width, default_crtc_height);
     printf("    -v verbose\n");
     printf("    -w fill black workaround (instead of turning off primary plane)\n");
     printf("    -d duration (default: %d)\n", default_duration);
@@ -624,7 +629,7 @@ static void print_usage(const char *progname)
     printf("    -h help\n");
     printf("\n");
     printf("Example:\n");
-    printf("    %s -p 31@1920x1080 -o 38@512x1024 -v -d 100 -m 1920x1080 -f AR24\n", progname);
+    printf("    %s -p 31@1920x1080 -o 38@512x2160 -v -d 100 -m 1920x1080 -f AR24 -c 3840x2160\n", progname);
 }
 
 static bool lock_new_surface(struct gbm_surface *gbm_surface, struct gbm_bo **out_bo, struct drm_fb **out_fb)
@@ -774,16 +779,20 @@ int main(int argc, char *argv[])
     char *overlay_plane_info = default_overlay_info;
     char *device_path = "/dev/dri/card0";
     char *mode_str = NULL;
+    char *crtc_str = NULL;
 	uint32_t format = GBM_FORMAT_ARGB8888;
     char *location = default_location;
 
     bool fill_black_workaround = false;
 
-    while ((opt = getopt(argc, argv, "whvd:p:o:D:m:f:l:")) != -1) {
+    while ((opt = getopt(argc, argv, "whvd:p:o:D:m:f:l:c:")) != -1) {
         switch (opt) {
             case 'h':
                 print_usage(argv[0]);
                 return 0;
+            case 'c':
+                crtc_str = optarg;
+                break;
             case 'l':
                 location = optarg;
                 break;
@@ -914,13 +923,26 @@ int main(int argc, char *argv[])
     struct gbm_bo *bo2 = NULL, *bo2_next = NULL;
     struct drm_fb *fb2 = NULL;
 
-    /* no difference w/ or w/o this */
-    ret = drmModeSetPlane(drm.fd, primary_plane_id, drm.crtc_id, fb->fb_id,
-        plane_flags, 0, 0, p_w, p_h, 0, 0, p_w << 16, p_h << 16);
-    if (ret) {
-        fprintf(stderr, "failed to set plane(primary) on: %s\n", strerror(errno));
-        return ret;
+    int crtc_width = default_crtc_width;
+    int crtc_height = default_crtc_height;
+
+    if (crtc_str) {
+        if (!parse_resolution(crtc_str, &crtc_width, &crtc_height)) {
+            fprintf(stderr, "failed to parse crtc_str: %s\n", crtc_str);
+            return -1;
+        }
     }
+    printf("CRTC width: %d height: %d\n", crtc_width, crtc_height);
+
+    /* no difference w/ or w/o this */
+    LOG_ARGS("%3d: drmModeSetPlane(%d, %d, %d, %d, ..., %d, %d, ..., %d << 16, %d << 16)\n", i,
+        drm.fd, primary_plane_id, drm.crtc_id, fb->fb_id,
+        crtc_width, crtc_height, p_w, p_h);
+    ret = drmModeSetPlane(drm.fd, primary_plane_id, drm.crtc_id, fb->fb_id,
+        plane_flags, 0, 0, crtc_width, crtc_height, 0, 0, p_w << 16, p_h << 16);
+    if (ret)
+        fprintf(stderr, "failed to set plane(primary) on: %s. Keep going anyway\n", strerror(errno));
+
     LOG_ARGS("%3d: drmModeSetPlane primary on\n", i);
 
     bool turn_overlay_on = false;
@@ -929,7 +951,7 @@ int main(int argc, char *argv[])
     int j = 0;
 
     while (true) {
-        int x_offset = (j * 10) % p_w;
+        int x_offset = (j * 10) % crtc_width;
         int waiting_for_flip = 1;
         bool overlay_visible = false;
         bool prev_cond = false;
@@ -1023,8 +1045,12 @@ int main(int argc, char *argv[])
                 return 1;
             }
 
+            LOG_ARGS("%3d: drmModeSetPlane(%d, %d, %d, %d, ..., %d, %d, ..., %d << 16, %d << 16)\n",
+                i,
+                drm.fd, primary_plane_id, drm.crtc_id, fb->fb_id,
+                crtc_width, crtc_height, p_w, p_h);
             ret = drmModeSetPlane(drm.fd, primary_plane_id, drm.crtc_id, fb->fb_id,
-                plane_flags, 0, 0, p_w, p_h, 0, 0, p_w << 16, p_h << 16);
+                plane_flags, 0, 0, crtc_width, crtc_height, 0, 0, p_w << 16, p_h << 16);
             if (ret)
                 fprintf(stderr, "failed to turn primary plane on(%s)\n", strerror(errno));
             else
