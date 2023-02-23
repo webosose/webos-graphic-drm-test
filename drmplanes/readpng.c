@@ -221,21 +221,20 @@ bool read_png(FILE *fp, unsigned int sig_read, png_buffer_handle *out_png_buffer
     return true;
 }
 
+inline uint32_t min(uint32_t a, uint32_t b)
+{
+    return a > b ? b : a;
+}
+
 bool fill_buffer(void* addr, uint32_t width, uint32_t height, uint32_t stride, png_buffer_handle png_buffer_handle)
 {
     struct png_buffer *png_buffer = png_buffer_handle;
-    if (!(png_buffer->width == width && png_buffer->height == height && png_buffer->stride == stride)) {
-        fprintf(stderr, "png_buffer mismatch %u = %u, %u = %u, %u = %u\n",
-            (uint32_t)png_buffer->width, width,
-            (uint32_t)png_buffer->height, height,
-            (uint32_t)png_buffer->stride, stride);
-        return false;
-    }
-
+    uint32_t min_height = min(height, png_buffer->height);
+    uint32_t min_stride = min(stride, png_buffer->stride);
     png_uint_32 row;
 
-    for (row = 0; row < height; row++)
-        memcpy(addr + row * stride, png_buffer->addr + row * stride, stride);
+    for (row = 0; row < min_height; row++)
+        memcpy(addr + row * stride, png_buffer->addr + row * png_buffer->stride, min_stride);
 
     return true;
 }
