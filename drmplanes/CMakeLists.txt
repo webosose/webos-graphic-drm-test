@@ -17,7 +17,7 @@ pkg_check_modules(GLESv2 REQUIRED glesv2 IMPORTED_TARGET)
 pkg_check_modules(EGL REQUIRED egl IMPORTED_TARGET)
 pkg_search_module(PNG REQUIRED libpng12 libpng IMPORTED_TARGET)
 
-add_executable(drmplanes main.c readpng.c)
+add_executable(drmplanes main.c readpng.c drm-common.c)
 target_link_libraries(drmplanes PUBLIC
     PkgConfig::GBM
     PkgConfig::DRM
@@ -28,7 +28,20 @@ target_link_libraries(drmplanes PUBLIC
 
 target_compile_options(drmplanes PRIVATE -Werror)
 
+add_executable(drmplanes-atomic main-atomic.c readpng.c drm-common.c)
+target_link_libraries(drmplanes-atomic PUBLIC
+    PkgConfig::GBM
+    PkgConfig::DRM
+    PkgConfig::GLESv2
+    PkgConfig::EGL
+    PkgConfig::PNG
+)
+
+target_compile_options(drmplanes-atomic PRIVATE -Werror)
+
+
 install(TARGETS drmplanes DESTINATION ${WEBOS_INSTALL_BINDIR})
+install(TARGETS drmplanes-atomic DESTINATION ${WEBOS_INSTALL_BINDIR})
 install(FILES primary_1920x1080.png secondary_512x2160.png
     DESTINATION ${WEBOS_INSTALL_DATADIR}/drmplanes
 )
