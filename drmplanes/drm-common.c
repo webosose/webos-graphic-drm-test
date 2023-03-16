@@ -300,7 +300,7 @@ out:
     return true;
 }
 
-int init_gl(struct gl *gl, struct gbm *gbm, uint32_t format)
+int init_egl(struct egl *egl, const struct gbm *gbm, uint32_t format)
 {
     EGLint major, minor, n;
     GLuint vertex_shader, fragment_shader;
@@ -326,52 +326,56 @@ int init_gl(struct gl *gl, struct gbm *gbm, uint32_t format)
             (void *) eglGetProcAddress("eglGetPlatformDisplayEXT");
     assert(get_platform_display != NULL);
 
-    gl->display = get_platform_display(EGL_PLATFORM_GBM_KHR, gbm->dev, NULL);
+    egl->display = get_platform_display(EGL_PLATFORM_GBM_KHR, gbm->dev, NULL);
 
-    if (!eglInitialize(gl->display, &major, &minor)) {
+    if (!eglInitialize(egl->display, &major, &minor)) {
         printf("failed to initialize\n");
         return -1;
     }
 
     printf("Using display %p with EGL version %d.%d\n",
-        gl->display, major, minor);
+        egl->display, major, minor);
 
-    printf("EGL Version \"%s\"\n", eglQueryString(gl->display, EGL_VERSION));
-    printf("EGL Vendor \"%s\"\n", eglQueryString(gl->display, EGL_VENDOR));
-    printf("EGL Extensions \"%s\"\n", eglQueryString(gl->display, EGL_EXTENSIONS));
+    printf("EGL Version \"%s\"\n", eglQueryString(egl->display, EGL_VERSION));
+    printf("EGL Vendor \"%s\"\n", eglQueryString(egl->display, EGL_VENDOR));
+    printf("EGL Extensions \"%s\"\n", eglQueryString(egl->display, EGL_EXTENSIONS));
 
     if (!eglBindAPI(EGL_OPENGL_ES_API)) {
         printf("failed to bind api EGL_OPENGL_ES_API\n");
         return -1;
     }
 
-    if (!egl_choose_config(gl->display, config_attribs, format,
-            &gl->config)) {
+    if (!egl_choose_config(egl->display, config_attribs, format,
+            &egl->config)) {
         printf("failed to choose config\n");
         return -1;
     }
 
-    gl->context = eglCreateContext(gl->display, gl->config,
+    egl->context = eglCreateContext(egl->display, egl->config,
         EGL_NO_CONTEXT, context_attribs);
-    if (gl->context == NULL) {
+    if (egl->context == NULL) {
         printf("failed to create context 1\n");
         return -1;
     }
 
-    gl->surface1 = eglCreateWindowSurface(gl->display, gl->config, gbm->surface1, NULL);
-    if (gl->surface1 == EGL_NO_SURFACE) {
+    egl->surface1 = eglCreateWindowSurface(egl->display, egl->config, gbm->surface1, NULL);
+    if (egl->surface1 == EGL_NO_SURFACE) {
         printf("failed to create egl surface 1\n");
         return -1;
     }
 
-    gl->surface2 = eglCreateWindowSurface(gl->display, gl->config, gbm->surface2, NULL);
-    if (gl->surface2 == EGL_NO_SURFACE) {
+    egl->surface2 = eglCreateWindowSurface(egl->display, egl->config, gbm->surface2, NULL);
+    if (egl->surface2 == EGL_NO_SURFACE) {
         printf("failed to create egl surface 2\n");
         return -1;
     }
 
     /* connect the context to the surface */
-    eglMakeCurrent(gl->display, gl->surface1, gl->surface1, gl->context);
+    eglMakeCurrent(egl->display, egl->surface1, egl->surface1, egl->context);
+    eglSwapBuffers(egl->display, egl->surface1);
+
+    eglMakeCurrent(egl->display, egl->surface2, egl->surface2, egl->context);
+    eglSwapBuffers(egl->display, egl->surface2);
 
     printf("GL Extensions: \"%s\"\n", glGetString(GL_EXTENSIONS));
 
@@ -461,7 +465,7 @@ bool parse_plane(char* resolution, int *id, int *w, int *h)
     return true;
 }
 
-bool lock_new_surface(int fd, struct gbm *gbm, struct gbm_surface *gbm_surface, struct gbm_bo **out_bo, struct drm_fb **out_fb)
+bool lock_new_surface(int fd, const struct gbm *gbm, struct gbm_surface *gbm_surface, struct gbm_bo **out_bo, struct drm_fb **out_fb)
 {
     struct gbm_bo *bo = gbm_surface_lock_front_buffer(gbm_surface);
     if (!bo) {
@@ -480,7 +484,7 @@ bool lock_new_surface(int fd, struct gbm *gbm, struct gbm_surface *gbm_surface, 
     return true;
 }
 
-char* gbm_surface_name(struct gbm *gbm, struct gbm_surface *surface)
+char* gbm_surface_name(const struct gbm *gbm, struct gbm_surface *surface)
 {
     if (surface == gbm->surface1)
         return "primary";
@@ -490,7 +494,7 @@ char* gbm_surface_name(struct gbm *gbm, struct gbm_surface *surface)
         return "unknown";
 }
 
-void release_gbm_bo(struct gbm *gbm, struct gbm_surface* surface, struct gbm_bo *bo)
+void release_gbm_bo(const struct gbm *gbm, struct gbm_surface* surface, struct gbm_bo *bo)
 {
     if (bo) {
         LOG_ARGS("gbm_surface_release_buffer: %s %p\n", gbm_surface_name(gbm, surface), bo);
@@ -579,22 +583,92 @@ bool read_png_and_write_to_bo(const char* filename, struct gbm_bo *bo)
     return true;
 }
 
-bool add_surface(int fd, struct gl *gl, struct gbm *gbm, EGLSurface gl_surface,
-    struct gbm_surface *gbm_surface, struct glcolor *color,
-    struct gbm_bo **out_bo, struct drm_fb **out_fb)
-{
-    eglMakeCurrent(gl->display, gl_surface, gl_surface, gl->context);
-    /*
-     * draw_gl(0, color, gl_surface);
-     */
-    eglSwapBuffers(gl->display, gl_surface);
-    return lock_new_surface(fd, gbm, gbm_surface, out_bo, out_fb);
-}
-
 void get_resource_path(char* fullpath, const char *location, const char *filename)
 {
     fullpath[0] = '\0';
     strcat(fullpath, location);
     strcat(fullpath, "/");
     strcat(fullpath, filename);
+}
+
+int create_program(const char *vs_src, const char *fs_src)
+{
+	GLuint vertex_shader, fragment_shader, program;
+	GLint ret;
+
+	vertex_shader = glCreateShader(GL_VERTEX_SHADER);
+
+	glShaderSource(vertex_shader, 1, &vs_src, NULL);
+	glCompileShader(vertex_shader);
+
+	glGetShaderiv(vertex_shader, GL_COMPILE_STATUS, &ret);
+	if (!ret) {
+		char *log;
+
+		printf("vertex shader compilation failed!:\n");
+		glGetShaderiv(vertex_shader, GL_INFO_LOG_LENGTH, &ret);
+		if (ret > 1) {
+			log = malloc(ret);
+			glGetShaderInfoLog(vertex_shader, ret, NULL, log);
+			printf("%s", log);
+			free(log);
+		}
+
+		return -1;
+	}
+
+	fragment_shader = glCreateShader(GL_FRAGMENT_SHADER);
+
+	glShaderSource(fragment_shader, 1, &fs_src, NULL);
+	glCompileShader(fragment_shader);
+
+	glGetShaderiv(fragment_shader, GL_COMPILE_STATUS, &ret);
+	if (!ret) {
+		char *log;
+
+		printf("fragment shader compilation failed!:\n");
+		glGetShaderiv(fragment_shader, GL_INFO_LOG_LENGTH, &ret);
+
+		if (ret > 1) {
+			log = malloc(ret);
+			glGetShaderInfoLog(fragment_shader, ret, NULL, log);
+			printf("%s", log);
+			free(log);
+		}
+
+		return -1;
+	}
+
+	program = glCreateProgram();
+
+	glAttachShader(program, vertex_shader);
+	glAttachShader(program, fragment_shader);
+
+	return program;
+}
+
+int link_program(unsigned program)
+{
+	GLint ret;
+
+	glLinkProgram(program);
+
+	glGetProgramiv(program, GL_LINK_STATUS, &ret);
+	if (!ret) {
+		char *log;
+
+		printf("program linking failed!:\n");
+		glGetProgramiv(program, GL_INFO_LOG_LENGTH, &ret);
+
+		if (ret > 1) {
+			log = malloc(ret);
+			glGetProgramInfoLog(program, ret, NULL, log);
+			printf("%s", log);
+			free(log);
+		}
+
+		return -1;
+	}
+
+	return 0;
 }

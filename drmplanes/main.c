@@ -42,7 +42,7 @@ bool verbose = false;
 
 static struct gbm gbm;
 static struct drm drm;
-static struct gl gl;
+static struct egl egl;
 
 static struct glcolor red = {1.0f, 0.0f, 0.0f, 1.0f};
 static struct glcolor blue = {0.0f, 0.0f, 1.0f, 1.0f};
@@ -73,9 +73,9 @@ static char* color_name(struct glcolor *c)
 
 static char* surface_name(EGLSurface surface)
 {
-    if (surface == gl.surface1)
+    if (surface == egl.surface1)
         return "primary";
-    else if (surface == gl.surface2)
+    else if (surface == egl.surface2)
         return "overlay";
     else
         return "unknown";
@@ -85,7 +85,7 @@ static void draw_gl(int i, struct glcolor *color, EGLSurface gl_surface)
 {
     LOG_ARGS("%3d: fill color %s on %s\n", i, color_name(color), surface_name(gl_surface));
     glClearColor(color->r, color->g, color->b, color->a);
-	glClear(GL_COLOR_BUFFER_BIT);
+    glClear(GL_COLOR_BUFFER_BIT);
 }
 
 static void page_flip_handler(int fd, unsigned int frame,
@@ -138,7 +138,7 @@ int main(int argc, char *argv[])
     char *device_path = "/dev/dri/card0";
     char *mode_str = NULL;
     char *crtc_str = NULL;
-	uint32_t format = GBM_FORMAT_ARGB8888;
+    uint32_t format = GBM_FORMAT_ARGB8888;
     char *location = default_location;
 
     bool fill_black_workaround = false;
@@ -235,7 +235,7 @@ int main(int argc, char *argv[])
         return ret;
     }
 
-    ret = init_gl(&gl, &gbm, format);
+    ret = init_egl(&egl, &gbm, format);
     if (ret) {
         printf("failed to initialize EGL\n");
         return ret;
@@ -244,7 +244,7 @@ int main(int argc, char *argv[])
     uint32_t plane_flags = 0;
 
     /* surface1 */
-    if (!add_surface(drm.fd, &gl, &gbm, gl.surface1, gbm.surface1, &red, &bo, &fb)) {
+    if (!lock_new_surface(drm.fd, &gbm, gbm.surface1, &bo, &fb)) {
         fprintf(stderr, "fail to add surface 1\n");
         return 1;
     }
@@ -330,7 +330,7 @@ int main(int argc, char *argv[])
         if (turn_overlay_on) {
             LOG_ARGS("%3d: turn_overlay_on\n", i);
             if (!fb2) {
-                if (!add_surface(drm.fd, &gl, &gbm, gl.surface2, gbm.surface2, &blue, &bo2, &fb2)) {
+                if (!lock_new_surface(drm.fd, &gbm, gbm.surface2, &bo2, &fb2)) {
                     fprintf(stderr, "fail to add surface 2\n");
                     return 1;
                 }
@@ -339,11 +339,11 @@ int main(int argc, char *argv[])
                     return 1;
                 }
             } else {
-                eglMakeCurrent(gl.display, gl.surface2, gl.surface2, gl.context);
+                eglMakeCurrent(egl.display, egl.surface2, egl.surface2, egl.context);
                 /*
-                 * draw_gl(i, &blue, gl.surface2);
+                 * draw_gl(i, &blue, egl.surface2);
                  */
-                eglSwapBuffers(gl.display, gl.surface2);
+                eglSwapBuffers(egl.display, egl.surface2);
 
                 if (!lock_new_surface(drm.fd, &gbm, gbm.surface2, &bo2_next, &fb2)) {
                     fprintf(stderr, "fail to lock surface 2\n");
@@ -360,9 +360,9 @@ int main(int argc, char *argv[])
              * Hence, fill black instead
              */
             if (fill_black_workaround) {
-                eglMakeCurrent(gl.display, gl.surface1, gl.surface1, gl.context);
-                draw_gl(i, &black, gl.surface1);
-                eglSwapBuffers(gl.display, gl.surface1);
+                eglMakeCurrent(egl.display, egl.surface1, egl.surface1, egl.context);
+                draw_gl(i, &black, egl.surface1);
+                eglSwapBuffers(egl.display, egl.surface1);
             } else {
                 LOG_ARGS("%3d: drmModeSetPlane primary off\n", i);
                 ret = drmModeSetPlane(drm.fd, primary_plane_id, drm.crtc_id, 0,
@@ -387,11 +387,11 @@ int main(int argc, char *argv[])
 
         if (turn_primary_on) {
             LOG_ARGS("%3d: turn_primary_on\n", i);
-            eglMakeCurrent(gl.display, gl.surface1, gl.surface1, gl.context);
+            eglMakeCurrent(egl.display, egl.surface1, egl.surface1, egl.context);
             /*
-             * draw_gl(i, &red, gl.surface1);
+             * draw_gl(i, &red, egl.surface1);
              */
-            eglSwapBuffers(gl.display, gl.surface1);
+            eglSwapBuffers(egl.display, egl.surface1);
 
             if (!lock_new_surface(drm.fd, &gbm, gbm.surface1, &bo_next, &fb)) {
                 fprintf(stderr, "fail to lock surface 1\n");

@@ -28,13 +28,14 @@ target_link_libraries(drmplanes PUBLIC
 
 target_compile_options(drmplanes PRIVATE -Werror)
 
-add_executable(drmplanes-atomic main-atomic.c readpng.c drm-common.c)
+add_executable(drmplanes-atomic main-atomic.c readpng.c drm-common.c cube-smooth.c esTransform.c png-image.c)
 target_link_libraries(drmplanes-atomic PUBLIC
     PkgConfig::GBM
     PkgConfig::DRM
     PkgConfig::GLESv2
     PkgConfig::EGL
     PkgConfig::PNG
+    m                           # needed by esTransfrom
 )
 
 target_compile_options(drmplanes-atomic PRIVATE -Werror)

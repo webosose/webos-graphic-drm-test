@@ -41,7 +41,7 @@
 bool verbose = false;
 
 static struct gbm gbm;
-static struct gl gl;
+const static struct egl *egl;
 
 struct plane {
     drmModePlane *plane;
@@ -186,6 +186,9 @@ static void print_usage(const char *progname)
     printf("    -m mode preferred (default: NULL, mode with highest resolution)\n");
     printf("    -f FOURCC format (default: AR24)\n");
     printf("    -l resource location (default: /usr/share/drmplanes)\n");
+    printf("    -t render type, one of:\n");
+    printf("       smooth    -  smooth shaded cube (default)\n");
+    printf("       png       -  PNG still image\n");
     printf("    -h help\n");
     printf("\n");
     printf("Example:\n");
@@ -316,8 +319,9 @@ int main(int argc, char *argv[])
     char *crtc_str = NULL;
     uint32_t format = GBM_FORMAT_ARGB8888;
     char *location = default_location;
+    enum type type = SMOOTH;
 
-    while ((opt = getopt(argc, argv, "hvad:p:o:D:m:f:l:c:")) != -1) {
+    while ((opt = getopt(argc, argv, "hvad:p:o:D:m:f:l:c:t:")) != -1) {
         switch (opt) {
             case 'h':
                 print_usage(argv[0]);
@@ -361,6 +365,18 @@ int main(int argc, char *argv[])
                     fourcc[2], fourcc[3]);
                 break;
             }
+            case 't': {
+                if (strcmp(optarg, "smooth") == 0) {
+                    type = SMOOTH;
+                } else if (strcmp(optarg, "png") == 0) {
+                    type = PNG;
+                } else {
+                    printf("invalid type: %s\n", optarg);
+                    print_usage(argv[0]);
+                    return -1;
+                }
+                break;
+            }
             case '?':
                 if (optopt == 'p' || optopt == 'o')
                     fprintf(stderr, "Option -%c requires an argument.\n", optopt);
@@ -378,6 +394,7 @@ int main(int argc, char *argv[])
 
     int p_w, p_h;
     int o_w, o_h;
+
     if (!parse_plane(primary_plane_info, &primary_plane_id, &p_w, &p_h)) {
         printf("failed to parse primary resolution %s\n", primary_plane_info);
         return ret;
@@ -408,10 +425,28 @@ int main(int argc, char *argv[])
         return ret;
     }
 
-    ret = init_gl(&gl, &gbm, format);
-    if (ret) {
+    switch (type) {
+        case SMOOTH:
+            egl = init_cube_smooth(&gbm, format, 4);
+            break;
+        case PNG: {
+            char primary_path[1024];
+            memset(primary_path, '\0', sizeof primary_path);
+
+            char secondary_path[1024];
+            memset(secondary_path, '\0', sizeof secondary_path);
+
+            get_resource_path(primary_path, location, primary_file_name);
+            get_resource_path(secondary_path, location, secondary_file_name);
+            egl = init_png_image(drm.fd, &gbm, format, primary_path, secondary_path);
+            break;
+        }
+        default:
+            break;
+    }
+    if (!egl) {
         printf("failed to initialize EGL\n");
-        return ret;
+        return -1;
     }
 
     uint32_t plane_flags = 0;
@@ -419,39 +454,13 @@ int main(int argc, char *argv[])
     struct gbm_bo *bo2 = NULL, *bo2_next = NULL;
     struct drm_fb *fb2 = NULL;
 
-    /* surface1 */
-    if (!add_surface(drm.fd, &gl, &gbm, gl.surface1, gbm.surface1, &red, &bo, &fb)) {
+    if (!lock_new_surface(drm.fd, &gbm, gbm.surface1, &bo, &fb)) {
         fprintf(stderr, "fail to add surface 1\n");
-        return 1;
+        return -1;
     }
-    if (!add_surface(drm.fd, &gl, &gbm, gl.surface2, gbm.surface2, &blue, &bo2, &fb2)) {
+    if (!lock_new_surface(drm.fd, &gbm, gbm.surface2, &bo2, &fb2)) {
         fprintf(stderr, "fail to add surface 2\n");
-        return 1;
-    }
-
-    char filepath[1024];
-    memset(filepath, '\0', sizeof filepath);
-
-    png_buffer_handle png_handle_primary;
-    get_resource_path(filepath, location, primary_file_name);
-    if (!read_png_from_file(filepath, &png_handle_primary)) {
-        fprintf(stderr, "fail to read_png_from_file %s\n", primary_file_name);
-        return 1;
-    }
-    if (!fill_gbm_buffer(bo, png_handle_primary)) {
-        fprintf(stderr, "fail to fill primary bo\n");
-        return 1;
-    }
-
-    png_buffer_handle png_handle_secondary;
-    get_resource_path(filepath, location, secondary_file_name);
-    if (!read_png_from_file(filepath, &png_handle_secondary)) {
-        fprintf(stderr, "fail to read_png_from_file %s\n", secondary_file_name);
-        return 1;
-    }
-    if (!fill_gbm_buffer(bo2, png_handle_secondary)) {
-        fprintf(stderr, "fail to fill secondary bo\n");
-        return 1;
+        return -1;
     }
 
     int crtc_width = default_crtc_width;
@@ -496,8 +505,23 @@ int main(int argc, char *argv[])
         turn_overlay_on = !prev_cond && overlay_visible;
         turn_primary_on = (prev_cond && !overlay_visible) || i == 1;
 
-        eglMakeCurrent(gl.display, gl.surface1, gl.surface1, gl.context);
-        eglSwapBuffers(gl.display, gl.surface1);
+        eglMakeCurrent(egl->display, egl->surface1, egl->surface1, egl->context);
+        egl->draw(i, bo, true);
+        eglSwapBuffers(egl->display, egl->surface1);
+
+        eglMakeCurrent(egl->display, egl->surface2, egl->surface2, egl->context);
+        egl->draw(i, bo2, false);
+        eglSwapBuffers(egl->display, egl->surface2);
+
+        if (!lock_new_surface(drm.fd, &gbm, gbm.surface1, &bo_next, &fb)) {
+            fprintf(stderr, "fail to add surface 1\n");
+            return 1;
+        }
+
+        if (!lock_new_surface(drm.fd, &gbm, gbm.surface2, &bo2_next, &fb2)) {
+            fprintf(stderr, "fail to add surface 2\n");
+            return 1;
+        }
 
         drmModeAtomicReq *req;
         req = drmModeAtomicAlloc();
@@ -536,9 +560,6 @@ int main(int argc, char *argv[])
         bo2 = bo2_next;
         bo2_next = NULL;
     }
-
-    destroy_png_buffer(png_handle_primary);
-    destroy_png_buffer(png_handle_secondary);
 
     return 0;
 }

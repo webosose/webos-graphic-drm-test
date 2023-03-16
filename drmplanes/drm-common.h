@@ -41,12 +41,19 @@ struct gbm {
     struct gbm_surface *surface2;
 };
 
-struct gl {
+enum type {
+	SMOOTH,        /* smooth-shaded */
+	PNG,           /* fill png image to mapped bo */
+};
+
+struct egl {
     EGLDisplay display;
     EGLConfig config;
     EGLContext context;
     EGLSurface surface1;
     EGLSurface surface2;
+
+	void (*draw)(unsigned i, struct gbm_bo *bo, bool is_primary);
 };
 
 struct drm_fb {
@@ -71,22 +78,26 @@ int init_gbm(struct gbm *gbm, int fd, int p_w, int p_h, int o_w, int o_h, uint32
 void log_message_with_args(const char *msg, ...);
 int match_config_to_visual(EGLDisplay egl_display, EGLint visual_id, EGLConfig *configs, int count);
 bool egl_choose_config(EGLDisplay egl_display, const EGLint *attribs, EGLint visual_id, EGLConfig *config_out);
-int init_gl(struct gl *gl, struct gbm *gbm, uint32_t format);
+int init_egl(struct egl *gl, const struct gbm *gbm, uint32_t format);
 
 void drm_fb_destroy_callback(struct gbm_bo *bo, void *data);
 struct drm_fb * drm_fb_get_from_bo(int fd, struct gbm_bo *bo);
 bool parse_plane(char* resolution, int *id, int *w, int *h);
-bool lock_new_surface(int fd, struct gbm *gbm, struct gbm_surface *gbm_surface, struct gbm_bo **out_bo, struct drm_fb **out_fb);
-char* gbm_surface_name(struct gbm *gbm, struct gbm_surface *surface);
-void release_gbm_bo(struct gbm *gbm, struct gbm_surface* surface, struct gbm_bo *bo);
-bool add_surface(int fd, struct gl *gl, struct gbm *gbm, EGLSurface gl_surface,
-    struct gbm_surface *gbm_surface, struct glcolor *color,
-    struct gbm_bo **out_bo, struct drm_fb **out_fb);
+bool lock_new_surface(int fd, const struct gbm *gbm, struct gbm_surface *gbm_surface, struct gbm_bo **out_bo, struct drm_fb **out_fb);
+char* gbm_surface_name(const struct gbm *gbm, struct gbm_surface *surface);
+void release_gbm_bo(const struct gbm *gbm, struct gbm_surface* surface, struct gbm_bo *bo);
 
 bool read_png_from_file(const char* filename, png_buffer_handle *out_png_buffer_handle);
 bool fill_gbm_buffer(struct gbm_bo *bo, png_buffer_handle png_buffer_handle);
 bool read_png_and_write_to_bo(const char* filename, struct gbm_bo *bo);
 
 void get_resource_path(char* fullpath, const char *location, const char *filename);
+
+int create_program(const char *vs_src, const char *fs_src);
+int link_program(unsigned program);
+
+const struct egl * init_cube_smooth(const struct gbm *gbm, uint32_t format, int samples);
+const struct egl * init_png_image(int drm_fd, const struct gbm *gbm, uint32_t format,
+    const char* primary_path, const char* secondary_path);
 
 #endif /* DRM_COMMON_H */
