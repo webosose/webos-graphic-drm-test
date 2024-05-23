@@ -40,9 +40,20 @@ target_link_libraries(drmplanes-atomic PUBLIC
 
 target_compile_options(drmplanes-atomic PRIVATE -Werror)
 
+add_executable(drm-gldraw-atomic drm-gldraw-atomic.c)
+target_link_libraries(drm-gldraw-atomic PUBLIC
+    PkgConfig::GBM
+    PkgConfig::DRM
+    PkgConfig::GLESv2
+    PkgConfig::EGL
+    m
+)
+
+target_compile_options(drm-gldraw-atomic PRIVATE -Werror)
 
 install(TARGETS drmplanes DESTINATION ${WEBOS_INSTALL_BINDIR})
 install(TARGETS drmplanes-atomic DESTINATION ${WEBOS_INSTALL_BINDIR})
+install(TARGETS drm-gldraw-atomic DESTINATION ${WEBOS_INSTALL_BINDIR})
 install(FILES primary_1920x1080.png secondary_512x2160.png
     DESTINATION ${WEBOS_INSTALL_DATADIR}/drmplanes
 )
