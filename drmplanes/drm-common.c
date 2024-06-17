@@ -358,13 +358,13 @@ int init_egl(struct egl *egl, const struct gbm *gbm, uint32_t format)
         return -1;
     }
 
-    egl->surface1 = eglCreateWindowSurface(egl->display, egl->config, gbm->surface1, NULL);
+    egl->surface1 = eglCreateWindowSurface(egl->display, egl->config, (EGLNativeWindowType)gbm->surface1, NULL);
     if (egl->surface1 == EGL_NO_SURFACE) {
         printf("failed to create egl surface 1\n");
         return -1;
     }
 
-    egl->surface2 = eglCreateWindowSurface(egl->display, egl->config, gbm->surface2, NULL);
+    egl->surface2 = eglCreateWindowSurface(egl->display, egl->config, (EGLNativeWindowType)gbm->surface2, NULL);
     if (egl->surface2 == EGL_NO_SURFACE) {
         printf("failed to create egl surface 2\n");
         return -1;
